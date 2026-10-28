@@ -13,8 +13,9 @@ const glob = (pattern) => new RegExp(`^${pattern.replace(/[.+^${}()|[\]\\]/g, '\
 http
   .createServer((req, res) => {
     const url = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-    let file = path.join(dist, path.normalize(url));
-    if (!file.startsWith(dist)) return res.writeHead(400).end();
+    let file = path.resolve(dist, `.${url}`);
+    const rel = path.relative(dist, file);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return res.writeHead(400).end();
     if (existsSync(file) && statSync(file).isDirectory()) file = path.join(file, 'index.html');
     if (!existsSync(file)) return res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
     for (const rule of headers) if (rule.source === '**' || glob(rule.source).test(url)) for (const h of rule.headers) res.setHeader(h.key, h.value);
