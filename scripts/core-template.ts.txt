@@ -1,0 +1,27 @@
+import { defineCore } from '../src/api';
+import { angleTo, wrapAngle } from './lib/nav';
+
+/**
+ * __NAME__ — describe your strategy here.
+ * You cannot see enemies. Each tick you get your own state + events ('hit' | 'hurt' | 'wall')
+ * and return exactly one action: move, evade, attack (or idle).
+ */
+export default defineCore({
+  meta: { name: '__NAME__', author: 'agent', version: '0.1' },
+  init(_arena, ctx) {
+    ctx.memory.aim = ctx.random() * Math.PI * 2;
+  },
+  tick(obs, ctx) {
+    const { self, arena, events } = obs;
+    const m = ctx.memory as { aim: number };
+
+    if (events.some((e) => e.type === 'hurt') && self.evadeCooldown === 0) {
+      return { type: 'evade' };
+    }
+    if (self.attackCooldown === 0) {
+      m.aim = wrapAngle(m.aim + 0.4);
+      return { type: 'attack', heading: m.aim };
+    }
+    return { type: 'move', heading: angleTo(self.x, self.y, arena.width / 2, arena.height / 2), throttle: 0.5 };
+  },
+});

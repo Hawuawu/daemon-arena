@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DAEMON//ARENA</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Cpolygon points=%2216,2 29,9 29,23 16,30 3,23 3,9%22 fill=%22%2305010d%22 stroke=%22%2300f0ff%22 stroke-width=%222%22/%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%225%22 fill=%22%23ff2bd6%22/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="logo"><span class="glitch" data-text="DAEMON//ARENA">DAEMON//ARENA</span><small>v0.1 · blind combat protocol</small></div>
+        <nav class="tabs">
+          <button class="tab active" data-view="arena">ARENA</button>
+          <button class="tab" data-view="tournament">TOURNAMENT</button>
+          <button class="tab" data-view="cores">CORES</button>
+          <button class="tab" data-view="protocol">PROTOCOL</button>
+        </nav>
+        <div class="status" id="status">SYS READY</div>
+      </header>
+
+      <section class="view active" id="view-arena">
+        <aside class="panel left">
+          <h2>// DEPLOY</h2>
+          <p class="hint">Select 2–8 daemon cores.</p>
+          <div id="deploy-list" class="core-list"></div>
+          <div class="field-row">
+            <label>SEED <input id="seed" type="number" value="1" /></label>
+            <button id="seed-random" class="icon" title="Random seed">⟳</button>
+          </div>
+          <label>TICKS <input id="ticks" type="number" value="3000" min="100" step="100" /></label>
+          <button id="run-match" class="primary">▶ JACK IN</button>
+          <div class="btn-row">
+            <button id="replay-save" title="Download replay JSON">SAVE REPLAY</button>
+            <label class="button" title="Load a replay produced by the CLI (--replay)">LOAD REPLAY<input id="replay-load" type="file" accept=".json" hidden /></label>
+          </div>
+        </aside>
+
+        <div class="stage">
+          <canvas id="arena"></canvas>
+          <div class="overlay-scan"></div>
+          <div class="banner" id="banner"></div>
+          <div class="cam-hint">wheel: zoom · drag: pan · dbl-click: reset · F: follow</div>
+          <div class="transport">
+            <button id="play" class="icon">❚❚</button>
+            <button id="restart" class="icon" title="Restart">↺</button>
+            <input id="scrub" type="range" min="0" max="0" value="0" />
+            <span id="tick-label">T 0000 / 0000</span>
+            <select id="speed">
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+              <option value="8">8×</option>
+            </select>
+          </div>
+        </div>
+
+        <aside class="panel right">
+          <h2>// TELEMETRY</h2>
+          <div id="scoreboard"></div>
+          <h2>// SIGNAL FEED</h2>
+          <div id="feed" class="feed"></div>
+        </aside>
+      </section>
+
+      <section class="view" id="view-tournament">
+        <aside class="panel left">
+          <h2>// BRACKET</h2>
+          <div id="tour-list" class="core-list"></div>
+          <label>MODE
+            <select id="tour-mode"><option value="duel">DUEL round-robin</option><option value="ffa">FREE-FOR-ALL</option></select>
+          </label>
+          <label>ROUNDS <input id="tour-rounds" type="number" value="10" min="1" max="200" /></label>
+          <label>BASE SEED <input id="tour-seed" type="number" value="1" /></label>
+          <button id="run-tour" class="primary">▶ RUN TOURNAMENT</button>
+          <div class="progress"><div id="tour-progress"></div></div>
+          <button id="tour-export">EXPORT JSON</button>
+        </aside>
+        <div class="panel wide" id="tour-results">
+          <p class="hint">Run a tournament to compute the scoring matrix.</p>
+        </div>
+      </section>
+
+      <section class="view" id="view-cores">
+        <aside class="panel left">
+          <h2>// CORE VAULT</h2>
+          <div id="vault-list" class="vault-list"></div>
+          <div class="btn-row">
+            <button id="core-new">NEW</button>
+            <label class="button">UPLOAD<input id="core-upload" type="file" accept=".js" multiple hidden /></label>
+          </div>
+        </aside>
+        <div class="panel wide editor-panel">
+          <div class="editor-head">
+            <h2 id="editor-title">// CORE SOURCE</h2>
+            <div class="btn-row">
+              <button id="core-validate">VALIDATE</button>
+              <button id="core-save" class="primary">SAVE CORE</button>
+              <button id="core-download">DOWNLOAD</button>
+              <button id="core-delete" class="danger">DELETE</button>
+            </div>
+          </div>
+          <textarea id="core-editor" spellcheck="false"></textarea>
+          <div id="core-msg" class="msg"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-protocol">
+        <div class="panel wide doc" id="protocol"></div>
+      </section>
+    </div>
+    <script type="module" src="/src/web/main.ts"></script>
+  </body>
+</html>

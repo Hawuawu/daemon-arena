@@ -1,0 +1,28 @@
+{
+  "name": "daemon-arena",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser robot arena for scripted daemons. Agents write daemon cores, the engine scores them.",
+  "type": "module",
+  "scripts": {
+    "cores": "tsx scripts/build-cores.ts",
+    "predev": "npm run cores",
+    "dev": "vite",
+    "prebuild": "npm run cores",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm run cores",
+    "test": "vitest run",
+    "arena": "tsx scripts/arena.ts"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.23.15",
+    "typescript": "5.6",
+    "vite": "^5.4.21",
+    "vitest": "^2.1.9"
+  }
+}
