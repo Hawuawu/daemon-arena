@@ -43,7 +43,8 @@ jobs:
       - name: Publish badges to the `badges` branch
         run: |
           pct=$(node -p "require('./coverage/coverage-summary.json').total.lines.pct")
-          tests=$(npx vitest run --reporter=json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);console.log(r.numPassedTests+' passed')})")
+          npx vitest run --reporter=json --outputFile=/tmp/vitest.json >/dev/null
+          tests="$(node -p "require('/tmp/vitest.json').numPassedTests") passed"
           color=$(node -p "$pct>=90?'#4c1':$pct>=75?'#dfb317':'#e05d44'")
           mkdir -p /tmp/badges
           node scripts/badge.mjs coverage "$pct%" "$color" /tmp/badges/coverage.svg
