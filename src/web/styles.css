@@ -38,7 +38,8 @@ body::before {
 .view.active { display: flex; }
 .panel { background: var(--panel); border: 1px solid var(--line); padding: 12px; overflow: auto; position: relative; clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px)); }
 .panel.left { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; gap: 10px; }
-.panel.right { width: 290px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+.panel.right { width: 290px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+#scoreboard { flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .panel.wide { flex: 1; min-width: 0; }
 h2 { font-family: var(--display); font-size: 12px; letter-spacing: 3px; color: var(--magenta); margin: 4px 0; text-shadow: 0 0 6px rgba(255, 43, 214, 0.6); }
 h3 { font-family: var(--display); font-size: 12px; letter-spacing: 2px; color: var(--cyan); margin: 18px 0 6px; }
@@ -80,9 +81,13 @@ button:disabled { opacity: 0.4; cursor: wait; }
 
 .dcard { border: 1px solid rgba(255, 255, 255, 0.08); border-left: 3px solid var(--c); padding: 8px; display: flex; flex-direction: column; gap: 5px; background: linear-gradient(90deg, color-mix(in srgb, var(--c) 12%, transparent), transparent); }
 .dcard.dead { opacity: 0.45; filter: grayscale(0.6); }
-.dcard .row { display: flex; justify-content: space-between; align-items: baseline; }
+.dcard .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .dcard .name { font-family: var(--display); font-size: 12px; letter-spacing: 2px; color: var(--c); text-shadow: 0 0 6px var(--c); }
+.dcard .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dcard .score { font-family: var(--mono); font-size: 20px; color: #fff; }
+#scoreboard.compact .dcard { padding: 5px 8px; gap: 3px; }
+#scoreboard.compact .score { font-size: 15px; }
+#scoreboard.compact .leds { font-size: 9px; }
 .dcard .score.neg { color: var(--red); }
 .bar { height: 5px; background: rgba(255, 255, 255, 0.08); }
 .bar > div { height: 100%; background: var(--c); box-shadow: 0 0 6px var(--c); transition: width 0.1s; }
@@ -92,8 +97,10 @@ button:disabled { opacity: 0.4; cursor: wait; }
 .led.hurt.on { color: var(--bg); background: var(--red); box-shadow: 0 0 10px var(--red); border-color: var(--red); }
 .led.phase.on { color: var(--bg); background: var(--cyan); box-shadow: 0 0 10px var(--cyan); border-color: var(--cyan); }
 .dcard .stats { font-size: 11px; color: var(--dim); margin-left: auto; }
-.feed { flex: 1; min-height: 120px; overflow: hidden; font-size: 12px; display: flex; flex-direction: column-reverse; gap: 2px; }
-.feed div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#scoreboard, .feed { scrollbar-width: thin; scrollbar-color: rgba(0, 240, 255, 0.35) transparent; }
+.feed { flex: 1 1 0; min-height: 140px; overflow-y: auto; font-size: 12px; display: flex; flex-direction: column-reverse; gap: 2px; }
+.feed div { flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
+.feed b { display: inline-block; max-width: 13ch; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .feed .t { color: var(--dim); margin-right: 6px; }
 
 .progress { height: 6px; background: rgba(255, 255, 255, 0.06); }
