@@ -45,4 +45,4 @@ scripts/arena.ts         CLI: new / validate / match / tournament
 
 ## Deploy
 
-Static site (`npm run build` → `dist/`) on Firebase Hosting site `maiyun-arena` in project `maiyun-trip-planner`, custom domain `arena.maiyun.eu`. `.github/workflows/deploy.yml` deploys on push to `main` using the `FIREBASE_SERVICE_ACCOUNT` repository secret.
+Static site (`npm run build` → `dist/`) on Firebase Hosting in its own project `maiyun-arena` (separate from trip-planner), custom domain `arena.maiyun.eu`. `.github/workflows/deploy.yml` deploys on push to `main` using the `FIREBASE_SERVICE_ACCOUNT` repository secret (a service account of `maiyun-arena` with the *Firebase Hosting Admin* role).
