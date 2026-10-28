@@ -1,0 +1,68 @@
+name: Security
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    container: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - run: semgrep scan --config p/javascript --config p/typescript --config p/secrets --metrics=off --error --exclude dist --exclude node_modules
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(gh release view -R gitleaks/gitleaks --json tagName -q .tagName)
+          gh release download "$v" -R gitleaks/gitleaks -p "gitleaks_${v#v}_linux_x64.tar.gz" -O - | tar xz gitleaks
+          ./gitleaks git . --redact --verbose
+
+  deps:
+    name: Dependency audit (npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm audit --audit-level=high
+
+  dast:
+    name: DAST (OWASP ZAP baseline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci && npm run build
+      - name: Serve dist/ with production headers
+        run: |
+          node scripts/serve-dist.mjs &
+          npx --yes wait-on@8 -t 30000 http://localhost:4173
+      - name: ZAP baseline
+        run: |
+          mkdir -p zap && chmod 777 zap && cp .zap/rules.tsv zap/
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:4173 -c rules.tsv -r report.html -J report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: zap/
