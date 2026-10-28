@@ -1,4 +1,4 @@
-import type { Action, ArenaInfo, DaemonEvent, Observation } from '../api';
+import type { Action, ArenaInfo, CoreMeta, DaemonEvent, Observation } from '../api';
 import type { CoreRuntime } from '../runtime/types';
 import { resolveConfig, type ArenaConfig } from './config';
 import { clamp, normalizeAngle, round2, segmentHitsCircle } from './math';
@@ -9,7 +9,9 @@ export const PALETTE = ['#00f0ff', '#ff2bd6', '#f9f871', '#39ff14', '#ff6b00', '
 
 interface Daemon {
   id: number;
-  runtime: CoreRuntime;
+  meta: CoreMeta;
+  /** Core was terminated (e.g. hung): the chassis stays on the field but never acts again. */
+  offline: boolean;
   x: number;
   y: number;
   heading: number;
@@ -36,14 +38,20 @@ interface Projectile {
   dodged: Set<number>;
 }
 
-export interface MatchOptions {
+export interface SimOptions {
   seed: number;
   config?: Partial<ArenaConfig>;
   /** Record a full replay (frames). Off for fast tournaments. */
   record?: boolean;
+}
+
+export interface MatchOptions extends SimOptions {
   onLog?: (daemonId: number, line: string) => void;
   now?: () => number;
 }
+
+/** What a core produced for one tick: a raw (unvalidated) action or an error. `ms` = wall time spent. */
+export type TickOutcome = { raw: unknown; ms: number } | { error: string; ms: number };
 
 export interface MatchOutput {
   result: MatchResult;
@@ -132,101 +140,111 @@ export function rankStandings(daemons: { id: number; name: string; stats: Daemon
   return { standings, winner: top.length === 1 ? top[0].id : null };
 }
 
-/** Run one deterministic match between already-instantiated core runtimes. */
-export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutput {
-  const cfg = resolveConfig(opts.config);
-  const now = opts.now ?? (() => globalThis.performance?.now() ?? Date.now());
-  const rng = createRng(opts.seed);
-  const info = arenaInfo(cfg, runtimes.length);
-  const spawns = spawn(runtimes.length, cfg, rng);
+/**
+ * Steppable deterministic match. The caller drives it:
+ *   const obs = sim.observe();          // per live daemon
+ *   sim.step(outcomes);                 // after asking every core (sync or async)
+ * until `sim.done`, then `sim.finish()`.
+ */
+export class MatchSim {
+  readonly cfg: ArenaConfig;
+  readonly info: ArenaInfo;
+  tick = 0;
+  done = false;
+  private daemons: Daemon[];
+  private projectiles: Projectile[] = [];
+  private hitMatrix: number[][];
+  private frames: Frame[] = [];
+  private frameEvents: FrameEvent[] = [];
 
-  const daemons: Daemon[] = runtimes.map((runtime, id) => ({
-    id,
-    runtime,
-    ...spawns[id],
-    vx: 0,
-    vy: 0,
-    integrity: cfg.maxIntegrity,
-    attackCd: 0,
-    evadeCd: 0,
-    phase: 0,
-    alive: true,
-    moving: false,
-    events: [],
-    stats: emptyStats(cfg.maxIntegrity),
-  }));
-  let projectiles: Projectile[] = [];
-  const hitMatrix = daemons.map(() => daemons.map(() => 0));
-  const frames: Frame[] = [];
-  let frameEvents: FrameEvent[] = [];
-
-  const fault = (d: Daemon, msg: string) => {
-    d.stats.faults++;
-    if (opts.record) frameEvents.push({ k: 'fault', d: d.id, msg: msg.slice(0, 200) });
-  };
-  const flushLogs = (d: Daemon) => {
-    for (const line of d.runtime.drainLogs()) opts.onLog?.(d.id, line);
-  };
-
-  for (const d of daemons) {
-    try {
-      d.runtime.init(info);
-    } catch (err) {
-      fault(d, `init: ${String((err as Error)?.message ?? err)}`);
-    }
-    flushLogs(d);
+  constructor(metas: CoreMeta[], private opts: SimOptions) {
+    this.cfg = resolveConfig(opts.config);
+    const rng = createRng(opts.seed);
+    this.info = arenaInfo(this.cfg, metas.length);
+    const spawns = spawn(metas.length, this.cfg, rng);
+    this.daemons = metas.map((meta, id) => ({
+      id,
+      meta,
+      offline: false,
+      ...spawns[id],
+      vx: 0,
+      vy: 0,
+      integrity: this.cfg.maxIntegrity,
+      attackCd: 0,
+      evadeCd: 0,
+      phase: 0,
+      alive: true,
+      moving: false,
+      events: [],
+      stats: emptyStats(this.cfg.maxIntegrity),
+    }));
+    this.hitMatrix = metas.map(() => metas.map(() => 0));
+    if (this.cfg.maxTicks <= 0) this.done = true;
+    if (opts.record) this.snapshot(0);
   }
 
-  const snapshot = (t: number) => {
-    frames.push({
-      t,
-      d: daemons.map((d): FrameDaemon => [
-        round2(d.x), round2(d.y), round2(d.heading), d.integrity, d.stats.score,
-        (d.alive ? 1 : 0) | (d.phase > 0 ? 2 : 0) | (d.moving ? 4 : 0),
-      ]),
-      p: projectiles.map((p) => [round2(p.x), round2(p.y), p.owner]),
-      e: frameEvents,
-    });
-    frameEvents = [];
-  };
-  if (opts.record) snapshot(0);
+  fault(id: number, msg: string) {
+    this.daemons[id].stats.faults++;
+    if (this.opts.record) this.frameEvents.push({ k: 'fault', d: id, msg: msg.slice(0, 200) });
+  }
 
-  let tick = 0;
-  const multi = daemons.length > 1;
-  while (tick < cfg.maxTicks) {
-    tick++;
+  /** Permanently disconnect a core (hung / crashed). Its chassis keeps taking hits. */
+  setOffline(id: number, msg: string) {
+    const d = this.daemons[id];
+    if (d.offline) return;
+    d.offline = true;
+    this.fault(id, msg);
+  }
 
-    // 1. Decide: every live daemon sees the same world state.
+  /** Advance the clock and return what each live, online daemon gets to see this tick. */
+  observe(): { id: number; obs: Observation }[] {
+    if (this.done) return [];
+    this.tick++;
+    const out: { id: number; obs: Observation }[] = [];
+    for (const d of this.daemons) {
+      if (!d.alive || d.offline) continue;
+      out.push({
+        id: d.id,
+        obs: {
+          tick: this.tick,
+          ticksLeft: this.cfg.maxTicks - this.tick,
+          self: {
+            x: d.x, y: d.y, heading: d.heading, vx: d.vx, vy: d.vy,
+            speed: Math.hypot(d.vx, d.vy), integrity: d.integrity,
+            attackCooldown: d.attackCd, evadeCooldown: d.evadeCd, phasing: d.phase > 0,
+          },
+          events: d.events,
+          arena: this.info,
+        },
+      });
+      d.events = [];
+    }
+    return out;
+  }
+
+  /** Apply the cores' answers for the tick returned by the last `observe()` and simulate it. */
+  step(outcomes: Map<number, TickOutcome>) {
+    if (this.done) return;
+    const { cfg, daemons, opts } = this;
+    const tick = this.tick;
+    const record = opts.record;
+
+    // 1. Decide.
     const actions = new Map<number, Action>();
     for (const d of daemons) {
-      if (!d.alive) continue;
-      const obs: Observation = {
-        tick,
-        ticksLeft: cfg.maxTicks - tick,
-        self: {
-          x: d.x, y: d.y, heading: d.heading, vx: d.vx, vy: d.vy,
-          speed: Math.hypot(d.vx, d.vy), integrity: d.integrity,
-          attackCooldown: d.attackCd, evadeCooldown: d.evadeCd, phasing: d.phase > 0,
-        },
-        events: d.events,
-        arena: info,
-      };
-      d.events = [];
+      if (!d.alive || d.offline) continue;
+      const out = outcomes.get(d.id);
       let action: Action = IDLE;
-      const started = now();
-      try {
-        const raw = d.runtime.tick(obs);
-        const valid = validateAction(raw);
+      if (out && 'error' in out) this.fault(d.id, out.error);
+      else if (out) {
+        const valid = validateAction(out.raw);
         if (valid) action = valid;
-        else fault(d, `invalid action: ${safeJson(raw)}`);
-      } catch (err) {
-        fault(d, String((err as Error)?.message ?? err));
+        else this.fault(d.id, `invalid action: ${safeJson(out.raw)}`);
       }
-      if (now() - started > cfg.tickBudgetMs) {
-        fault(d, `tick budget exceeded (${cfg.tickBudgetMs}ms)`);
+      if (out && out.ms > cfg.tickBudgetMs) {
+        this.fault(d.id, `tick budget exceeded (${cfg.tickBudgetMs}ms)`);
         action = IDLE;
       }
-      flushLogs(d);
       actions.set(d.id, action);
     }
 
@@ -252,20 +270,20 @@ export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutp
         d.phase = cfg.evadeTicks;
         d.evadeCd = cfg.evadeCooldown;
         d.stats.evades++;
-        if (opts.record) frameEvents.push({ k: 'evade', d: d.id, h: round2(h) });
+        if (record) this.frameEvents.push({ k: 'evade', d: d.id, h: round2(h) });
       } else if (a.type === 'attack' && d.attackCd === 0) {
         const h = normalizeAngle(a.heading);
         const off = cfg.daemonRadius + cfg.projectileRadius + 2;
         const x = d.x + Math.cos(h) * off;
         const y = d.y + Math.sin(h) * off;
-        projectiles.push({
+        this.projectiles.push({
           owner: d.id, firedAt: tick, x, y,
           vx: Math.cos(h) * cfg.projectileSpeed, vy: Math.sin(h) * cfg.projectileSpeed,
           age: 0, dodged: new Set(),
         });
         d.attackCd = cfg.attackCooldown;
         d.stats.shots++;
-        if (opts.record) frameEvents.push({ k: 'fire', d: d.id, x: round2(x), y: round2(y), h: round2(h) });
+        if (record) this.frameEvents.push({ k: 'fire', d: d.id, x: round2(x), y: round2(y), h: round2(h) });
       }
     }
 
@@ -295,13 +313,13 @@ export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutp
       if (bumped) {
         d.stats.wallHits++;
         d.events.push({ type: 'wall' });
-        if (opts.record) frameEvents.push({ k: 'wall', d: d.id, x: round2(d.x), y: round2(d.y) });
+        if (record) this.frameEvents.push({ k: 'wall', d: d.id, x: round2(d.x), y: round2(d.y) });
       }
     }
 
     // 4. Projectiles.
     const survivors: Projectile[] = [];
-    for (const p of projectiles) {
+    for (const p of this.projectiles) {
       const x0 = p.x;
       const y0 = p.y;
       p.x += p.vx;
@@ -315,7 +333,7 @@ export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutp
           if (!p.dodged.has(d.id)) {
             p.dodged.add(d.id);
             d.stats.dodges++;
-            if (opts.record) frameEvents.push({ k: 'dodge', d: d.id, x: round2(p.x), y: round2(p.y) });
+            if (record) this.frameEvents.push({ k: 'dodge', d: d.id, x: round2(p.x), y: round2(p.y) });
           }
           continue;
         }
@@ -326,15 +344,15 @@ export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutp
         d.stats.score += cfg.scoring.hurt;
         d.events.push({ type: 'hurt' });
         owner.stats.hits++;
-        hitMatrix[owner.id][d.id]++;
+        this.hitMatrix[owner.id][d.id]++;
         owner.stats.score += cfg.scoring.hit;
         owner.events.push({ type: 'hit', firedAt: p.firedAt });
-        if (opts.record) frameEvents.push({ k: 'hit', d: d.id, by: owner.id, x: round2(p.x), y: round2(p.y) });
+        if (record) this.frameEvents.push({ k: 'hit', d: d.id, by: owner.id, x: round2(p.x), y: round2(p.y) });
         if (d.integrity <= 0) {
           d.alive = false;
           d.phase = 0;
           d.stats.derezzedAt = tick;
-          if (opts.record) frameEvents.push({ k: 'derez', d: d.id, x: round2(d.x), y: round2(d.y) });
+          if (record) this.frameEvents.push({ k: 'derez', d: d.id, x: round2(d.x), y: round2(d.y) });
         }
         consumed = true;
         break;
@@ -342,37 +360,79 @@ export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutp
       const inside = p.x >= 0 && p.y >= 0 && p.x <= cfg.width && p.y <= cfg.height;
       if (!consumed && inside && p.age < cfg.projectileLifetime) survivors.push(p);
     }
-    projectiles = survivors;
+    this.projectiles = survivors;
 
-    if (opts.record) snapshot(tick);
+    if (record) this.snapshot(tick);
     const alive = daemons.filter((d) => d.alive).length;
-    if (multi ? alive <= 1 : alive === 0) break;
+    if ((daemons.length > 1 ? alive <= 1 : alive === 0) || tick >= cfg.maxTicks) this.done = true;
   }
 
-  for (const d of daemons) d.runtime.dispose?.();
-
-  const { standings, winner } = rankStandings(
-    daemons.map((d) => ({ id: d.id, name: d.runtime.meta.name, stats: d.stats })),
-  );
-  const result: MatchResult = { seed: opts.seed, ticks: tick, standings, winner, hitMatrix };
-  if (!opts.record) return { result };
-  return {
-    result,
-    replay: {
-      format: 'daemon-arena-replay',
-      version: 1,
-      seed: opts.seed,
-      config: cfg,
-      daemons: assignColors(daemons.map((d) => ({
-        id: d.id,
-        name: d.runtime.meta.name,
-        author: d.runtime.meta.author,
-        color: d.runtime.meta.color ?? '',
-      }))),
-      frames,
+  finish(): MatchOutput {
+    const { daemons, opts } = this;
+    const { standings, winner } = rankStandings(daemons.map((d) => ({ id: d.id, name: d.meta.name, stats: d.stats })));
+    const result: MatchResult = { seed: opts.seed, ticks: this.tick, standings, winner, hitMatrix: this.hitMatrix };
+    if (!opts.record) return { result };
+    return {
       result,
-    },
+      replay: {
+        format: 'daemon-arena-replay',
+        version: 1,
+        seed: opts.seed,
+        config: this.cfg,
+        daemons: assignColors(daemons.map((d) => ({ id: d.id, name: d.meta.name, author: d.meta.author, color: d.meta.color ?? '' }))),
+        frames: this.frames,
+        result,
+      },
+    };
+  }
+
+  private snapshot(t: number) {
+    this.frames.push({
+      t,
+      d: this.daemons.map((d): FrameDaemon => [
+        round2(d.x), round2(d.y), round2(d.heading), d.integrity, d.stats.score,
+        (d.alive ? 1 : 0) | (d.phase > 0 ? 2 : 0) | (d.moving ? 4 : 0),
+      ]),
+      p: this.projectiles.map((p) => [round2(p.x), round2(p.y), p.owner]),
+      e: this.frameEvents,
+    });
+    this.frameEvents = [];
+  }
+}
+
+const errorMessage = (err: unknown) => String((err as Error)?.message ?? err);
+
+/** Run one deterministic match synchronously between already-instantiated core runtimes (CLI, tests). */
+export function runMatch(runtimes: CoreRuntime[], opts: MatchOptions): MatchOutput {
+  const now = opts.now ?? (() => globalThis.performance?.now() ?? Date.now());
+  const sim = new MatchSim(runtimes.map((r) => r.meta), opts);
+  const flushLogs = (id: number) => {
+    for (const line of runtimes[id].drainLogs()) opts.onLog?.(id, line);
   };
+  runtimes.forEach((runtime, id) => {
+    try {
+      runtime.init(sim.info);
+    } catch (err) {
+      sim.fault(id, `init: ${errorMessage(err)}`);
+    }
+    flushLogs(id);
+  });
+  while (!sim.done) {
+    const outcomes = new Map<number, TickOutcome>();
+    for (const { id, obs } of sim.observe()) {
+      const started = now();
+      try {
+        const raw = runtimes[id].tick(obs);
+        outcomes.set(id, { raw, ms: now() - started });
+      } catch (err) {
+        outcomes.set(id, { error: errorMessage(err), ms: now() - started });
+      }
+      flushLogs(id);
+    }
+    sim.step(outcomes);
+  }
+  for (const r of runtimes) r.dispose?.();
+  return sim.finish();
 }
 
 function safeJson(v: unknown): string {

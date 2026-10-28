@@ -1,8 +1,38 @@
-import type { CoreContext, CoreMeta, DaemonCore } from '../api';
+import type { ArenaInfo, CoreMeta, Observation } from '../api';
 import { createRng } from '../engine/rng';
 import type { CoreFactory, CoreRuntime } from './types';
 
+/**
+ * Daemon core = one plain JavaScript script:
+ *
+ *   // @name  BLINKER
+ *   // @color #f9f871
+ *   let aim = 0;
+ *   function tick(obs) {
+ *     if (obs.self.attackCooldown === 0) return attack(aim += 0.4);
+ *     return move(angleTo(obs.arena.width / 2, obs.arena.height / 2));
+ *   }
+ *
+ * Top-level variables persist for the match (one fresh instance per daemon per match).
+ * Optional `function init(arena)` runs once before the first tick.
+ */
+
 export class CoreLoadError extends Error {}
+
+export const META_KEYS = ['name', 'author', 'version', 'color', 'description'] as const;
+
+/** Reads `// @key value` header comments. Requires `@name`. Never executes the script. */
+export function parseMeta(source: string): CoreMeta {
+  const meta: Record<string, string> = {};
+  for (const line of source.split('\n')) {
+    const m = /^\s*\/\/\s*@(\w+)\s+(.+?)\s*$/.exec(line);
+    if (m && (META_KEYS as readonly string[]).includes(m[1]) && !(m[1] in meta)) meta[m[1]] = m[2].slice(0, 200);
+  }
+  if (!meta.name) throw new CoreLoadError('missing core name: add a header line like `// @name MY-DAEMON`');
+  meta.name = meta.name.slice(0, 24);
+  if (meta.color && !/^#[0-9a-f]{3,8}$/i.test(meta.color)) delete meta.color;
+  return meta as unknown as CoreMeta;
+}
 
 export function formatLog(args: unknown[]): string {
   return args
@@ -18,73 +48,104 @@ export function formatLog(args: unknown[]): string {
     .slice(0, 500);
 }
 
-export function makeContext(seed: number, logs: string[]): CoreContext {
-  return {
-    random: createRng(seed),
-    memory: {},
-    log: (...args: unknown[]) => {
-      if (logs.length < 200) logs.push(formatLog(args));
-    },
-  };
+export interface ScriptExports {
+  init?: (arena: ArenaInfo) => void;
+  tick: (obs: Observation) => unknown;
 }
 
-/** Accepts `module.exports = core`, `exports.default = core` (esbuild cjs output) or `{ core }`. */
-export function pickCore(exportsObj: unknown): DaemonCore {
-  const e = exportsObj as Record<string, unknown> | undefined;
-  const candidate = (e && (e.default ?? e.core ?? e)) as Partial<DaemonCore> | undefined;
-  if (!candidate || typeof candidate !== 'object') throw new CoreLoadError('core must export an object');
-  if (typeof candidate.tick !== 'function') throw new CoreLoadError('core must export a tick(obs, ctx) function');
-  const meta = candidate.meta as CoreMeta | undefined;
-  if (!meta || typeof meta.name !== 'string' || !meta.name.trim()) throw new CoreLoadError('core must export meta.name');
-  return candidate as DaemonCore;
+/** Globals available to every core script. */
+export const HELPER_NAMES = ['move', 'evade', 'attack', 'idle', 'angleTo', 'distanceTo', 'wrapAngle', 'TAU', 'random', 'log'] as const;
+const TAU = Math.PI * 2;
+
+export function createHelpers(random: () => number, logs: string[], current: { obs: Observation | null }) {
+  const self = () => current.obs?.self ?? { x: 0, y: 0 };
+  const log = (...args: unknown[]) => {
+    if (logs.length < 200) logs.push(formatLog(args));
+  };
+  const helpers: Record<(typeof HELPER_NAMES)[number], unknown> = {
+    move: (heading: number, throttle = 1) => ({ type: 'move', heading, throttle }),
+    evade: (heading?: number) => ({ type: 'evade', heading }),
+    attack: (heading: number) => ({ type: 'attack', heading }),
+    idle: () => ({ type: 'idle' }),
+    angleTo: (x: number, y: number) => Math.atan2(y - self().y, x - self().x),
+    distanceTo: (x: number, y: number) => Math.hypot(x - self().x, y - self().y),
+    wrapAngle: (a: number) => {
+      a %= TAU;
+      if (a <= -Math.PI) a += TAU;
+      if (a > Math.PI) a -= TAU;
+      return a;
+    },
+    TAU,
+    random,
+    log,
+  };
+  return { helpers, log };
+}
+
+/** The script wrapped as an expression evaluating to its `{ init, tick }`. */
+export function scriptExpression(source: string): string {
+  return `(function () {"use strict";\n${source}\n;return { init: typeof init === "function" ? init : undefined, tick: typeof tick === "function" ? tick : undefined };\n})()`;
+}
+
+export function checkExports(exp: unknown): ScriptExports {
+  const e = exp as Partial<ScriptExports> | undefined;
+  if (!e || typeof e.tick !== 'function') throw new CoreLoadError('core must define `function tick(obs) { ... }`');
+  return e as ScriptExports;
 }
 
 const BLOCKED_GLOBALS = [
   'window', 'self', 'globalThis', 'document', 'fetch', 'XMLHttpRequest', 'WebSocket', 'importScripts',
-  'postMessage', 'Worker', 'setTimeout', 'setInterval', 'queueMicrotask', 'Date', 'performance',
-  'localStorage', 'sessionStorage', 'indexedDB', 'require', 'process',
+  'postMessage', 'Worker', 'setTimeout', 'setInterval', 'queueMicrotask', 'Date', 'performance', 'Function',
+  'localStorage', 'sessionStorage', 'indexedDB', 'caches', 'navigator', 'location', 'require', 'process', 'module', 'exports',
 ];
 
-function instantiateInline(source: string, seed: number): { core: DaemonCore; ctx: CoreContext; logs: string[] } {
+function instantiate(source: string, seed: number): CoreRuntime & { exports: ScriptExports } {
   const logs: string[] = [];
-  const ctx = makeContext(seed, logs);
-  const seededMath = Object.freeze(Object.assign(Object.create(Math) as Math, { random: ctx.random }));
-  const consoleShim = { log: ctx.log, info: ctx.log, warn: ctx.log, error: ctx.log, debug: ctx.log };
-  const module = { exports: {} as unknown };
-  let fn: (...args: unknown[]) => void;
+  const random = createRng(seed);
+  const current = { obs: null as Observation | null };
+  const { helpers, log } = createHelpers(random, logs, current);
+  const seededMath = Object.freeze(Object.assign(Object.create(Math) as Math, { random }));
+  const consoleShim = { log, info: log, warn: log, error: log, debug: log };
+  let fn: (...args: unknown[]) => unknown;
   try {
-    fn = new Function('module', 'exports', 'Math', 'console', ...BLOCKED_GLOBALS, `"use strict";\n${source}`) as typeof fn;
+    fn = new Function('Math', 'console', ...HELPER_NAMES, ...BLOCKED_GLOBALS, `return ${scriptExpression(source)};`) as typeof fn;
   } catch (err) {
     throw new CoreLoadError(`syntax error: ${(err as Error).message}`);
   }
+  let exports: ScriptExports;
   try {
-    fn(module, module.exports, seededMath, consoleShim, ...BLOCKED_GLOBALS.map(() => undefined));
+    exports = checkExports(fn(seededMath, consoleShim, ...HELPER_NAMES.map((n) => helpers[n]), ...BLOCKED_GLOBALS.map(() => undefined)));
   } catch (err) {
-    throw new CoreLoadError(`core threw while loading: ${(err as Error).message}`);
+    if (err instanceof CoreLoadError) throw err;
+    throw new CoreLoadError(`core threw while loading: ${(err as Error)?.message ?? err}`);
   }
-  return { core: pickCore(module.exports), ctx, logs };
+  return {
+    meta: { name: '' },
+    exports,
+    init: (arena) => exports.init?.(arena),
+    tick: (obs) => {
+      current.obs = obs;
+      return exports.tick(obs);
+    },
+    drainLogs: () => logs.splice(0, logs.length),
+  };
 }
 
 /**
- * In-process core loader (browser + fast CLI mode). Shadows ambient globals and seeds Math.random
- * for determinism. This is hygiene, not a security boundary: in the browser, matches run inside a
- * Web Worker that the UI terminates if a core hangs.
+ * In-process core loader (CLI default, browser core workers). Shadows ambient globals and seeds
+ * Math.random for determinism. Not a security boundary on its own: in the browser every core
+ * runs inside its own hardened Web Worker (see src/web/core.worker.ts).
  */
 export function compileCore(source: string, id = 'core'): CoreFactory {
-  const probe = instantiateInline(source, 0);
-  const meta: CoreMeta = { ...probe.core.meta };
+  const meta = parseMeta(source);
+  instantiate(source, 0);
   return {
     id,
     meta,
     source,
     create(seed: number): CoreRuntime {
-      const { core, ctx, logs } = instantiateInline(source, seed);
-      return {
-        meta,
-        init: (arena) => core.init?.call(core, arena, ctx),
-        tick: (obs) => core.tick.call(core, obs, ctx),
-        drainLogs: () => logs.splice(0, logs.length),
-      };
+      const rt = instantiate(source, seed);
+      return { ...rt, meta };
     },
   };
 }

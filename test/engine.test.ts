@@ -1,18 +1,18 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runMatch, validateAction } from '../src/engine/match';
+import { MatchSim, runMatch, validateAction } from '../src/engine/match';
 import { hashSeed } from '../src/engine/rng';
 import { runTournament } from '../src/engine/tournament';
 import { compileCoreVm } from '../src/runtime/node';
-import { CoreLoadError, compileCore } from '../src/runtime/sandbox';
+import { CoreLoadError, compileCore, parseMeta } from '../src/runtime/sandbox';
 import type { CoreFactory } from '../src/runtime/types';
 
-const builtin = (name: string) => readFileSync(path.join(__dirname, '..', 'cores', 'dist', `${name}.core.js`), 'utf8');
-const run = (factories: CoreFactory[], seed: number, record = false) =>
-  runMatch(factories.map((f, i) => f.create(hashSeed(seed, i))), { seed, record });
-
-const sitter = (name: string) => compileCore(`module.exports = { meta: { name: '${name}' }, tick() { return null; } };`);
+const builtin = (name: string) => readFileSync(path.join(__dirname, '..', 'cores', `${name}.js`), 'utf8');
+const run = (factories: CoreFactory[], seed: number, record = false, maxTicks?: number) =>
+  runMatch(factories.map((f, i) => f.create(hashSeed(seed, i))), { seed, record, config: maxTicks ? { maxTicks } : undefined });
+const script = (name: string, body: string) => `// @name ${name}\n${body}`;
+const sitter = (name: string) => compileCore(script(name, 'function tick() { return idle(); }'));
 
 describe('match engine', () => {
   it('is deterministic for a given seed', () => {
@@ -25,15 +25,12 @@ describe('match engine', () => {
   });
 
   it('scores +hit for the shooter and -hurt for the target, and feeds back only hit/hurt', () => {
-    // Shooter fires along its line to the sitter; spawn positions are revealed via a probe run.
     const probe = run([sitter('A'), sitter('B')], 7, true).replay!.frames[0].d;
-    const [ax, ay] = probe[0];
-    const [bx, by] = probe[1];
-    const heading = Math.atan2(by - ay, bx - ax);
-    const shooter = compileCore(`module.exports = { meta: { name: 'SHOOTER' },
-      tick(obs) { return obs.self.attackCooldown === 0 ? { type: 'attack', heading: ${heading} } : null; } };`);
-    const target = compileCore(`module.exports = { meta: { name: 'TARGET' },
-      tick(obs) { for (const e of obs.events) if (e.type !== 'hurt' && e.type !== 'wall') throw new Error('leak ' + e.type); return null; } };`);
+    const heading = Math.atan2(probe[1][1] - probe[0][1], probe[1][0] - probe[0][0]);
+    const shooter = compileCore(script('SHOOTER', `function tick(obs) { return obs.self.attackCooldown === 0 ? attack(${heading}) : null; }`));
+    const target = compileCore(script('TARGET', `function tick(obs) {
+      for (const e of obs.events) if (e.type !== 'hurt' && e.type !== 'wall') throw new Error('leak ' + e.type);
+      return null; }`));
     const { result } = run([shooter, target], 7);
     const s = result.standings.find((x) => x.name === 'SHOOTER')!;
     const t = result.standings.find((x) => x.name === 'TARGET')!;
@@ -48,9 +45,22 @@ describe('match engine', () => {
   });
 
   it('turns exceptions and invalid actions into faults', () => {
-    const thrower = compileCore(`module.exports = { meta: { name: 'BAD' }, tick(obs) { if (obs.tick % 2) throw new Error('x'); return { type: 'teleport' }; } };`);
-    const { result } = runMatch([thrower.create(1), sitter('OK').create(2)], { seed: 1, config: { maxTicks: 50 } });
+    const bad = compileCore(script('BAD', `function tick(obs) { if (obs.tick % 2) throw new Error('x'); return { type: 'teleport' }; }`));
+    const { result } = run([bad, sitter('OK')], 1, false, 50);
     expect(result.standings.find((s) => s.name === 'BAD')!.faults).toBe(50);
+  });
+
+  it('keeps an offline (crashed) core on the field as a target', () => {
+    const sim = new MatchSim([{ name: 'A' }, { name: 'B' }], { seed: 1, config: { maxTicks: 20 } });
+    sim.setOffline(1, 'core unresponsive');
+    while (!sim.done) {
+      const obs = sim.observe();
+      expect(obs.map((o) => o.id)).toEqual([0]);
+      sim.step(new Map([[0, { raw: null, ms: 0 }]]));
+    }
+    const { result } = sim.finish();
+    expect(result.ticks).toBe(20);
+    expect(result.standings.find((s) => s.name === 'B')!.faults).toBe(1);
   });
 
   it('validates actions', () => {
@@ -62,30 +72,44 @@ describe('match engine', () => {
   });
 });
 
-describe('core runtime', () => {
-  it('rejects malformed cores', () => {
-    expect(() => compileCore('module.exports = {}')).toThrow(CoreLoadError);
-    expect(() => compileCore('module.exports = { meta: {}, tick() {} }')).toThrow(/meta.name/);
-    expect(() => compileCore('this is not js')).toThrow(/syntax/);
+describe('core scripts', () => {
+  it('parses header metadata without running the script', () => {
+    expect(parseMeta('// @name  X-1\n// @color #abc\n// @author me\nthrow 1')).toEqual({ name: 'X-1', color: '#abc', author: 'me' });
+    expect(parseMeta('// @name X\n// @color red;background:url(x)').color).toBeUndefined();
+    expect(() => parseMeta('function tick() {}')).toThrow(/@name/);
   });
 
-  it('seeds Math.random and hides Date / fetch', () => {
-    const src = `module.exports = { meta: { name: 'R' }, tick() { return null; },
-      probe: [Math.random(), typeof Date, typeof fetch, typeof globalThis] };`;
-    const a = compileCore(src);
-    expect(a.meta.name).toBe('R');
-    const mod = { exports: {} as { probe?: unknown[] } };
-    new Function('module', 'Math', 'Date', 'fetch', 'globalThis', src)(mod, Object.assign(Object.create(Math), { random: () => 0.5 }));
-    expect(mod.exports.probe!.slice(1)).toEqual(['undefined', 'undefined', 'undefined']);
+  it('rejects malformed cores', () => {
+    expect(() => compileCore('// @name X\nlet a = 1;')).toThrow(/function tick/);
+    expect(() => compileCore('// @name X\nthis is not js')).toThrow(/syntax/);
+    expect(() => compileCore('// @name X\nthrow new Error("boom")')).toThrow(CoreLoadError);
+  });
+
+  it('keeps top-level state per instance, seeds random() and hides ambient globals', () => {
+    const src = script('R', `let n = 0; const r = random();
+      const probe = [typeof Date, typeof fetch, typeof globalThis, typeof self, typeof Function, Math.random() === Math.random()];
+      function tick() { n++; log(n, r, probe); return idle(); }`);
+    const f = compileCore(src);
+    const a = f.create(5);
+    const b = f.create(5);
+    a.tick({} as never);
+    a.tick({} as never);
+    b.tick({} as never);
+    const [la, lb] = [a.drainLogs(), b.drainLogs()];
+    expect(la).toHaveLength(2);
+    expect(JSON.parse(`[${la[1].replace(/ /g, ',')}]`)[0]).toBe(2);
+    expect(lb[0]).toBe(la[0]);
+    expect(la[0]).toContain('["undefined","undefined","undefined","undefined","undefined",false]');
   });
 
   it('node:vm runtime matches the inline runtime and enforces timeouts', () => {
-    const inline = ['hunter', 'sentinel'].map((n) => compileCore(builtin(n), n));
-    const vm = ['hunter', 'sentinel'].map((n) => compileCoreVm(builtin(n), n));
+    const names = ['hunter', 'sentinel'];
+    const inline = names.map((n) => compileCore(builtin(n), n));
+    const vm = names.map((n) => compileCoreVm(builtin(n), n));
     expect(run(vm, 5).result).toEqual(run(inline, 5).result);
 
-    const hang = compileCoreVm(`module.exports = { meta: { name: 'HANG' }, tick(obs) { if (obs.tick === 3) for(;;){} return null; } };`, 'hang', { timeoutMs: 20 });
-    const { result } = runMatch([hang.create(1), sitter('OK').create(2)], { seed: 1, config: { maxTicks: 10 } });
+    const hang = compileCoreVm(script('HANG', 'function tick(obs) { if (obs.tick === 3) for(;;){} return null; }'), 'hang', { timeoutMs: 20 });
+    const { result } = run([hang, sitter('OK')], 1, false, 10);
     expect(result.standings.find((s) => s.name === 'HANG')!.faults).toBeGreaterThanOrEqual(1);
   });
 });
@@ -94,7 +118,6 @@ describe('tournament', () => {
   it('builds a consistent duel scoring matrix', () => {
     const cores = ['hunter', 'phantom', 'spinner'].map((n) => compileCore(builtin(n), n));
     const t = runTournament(cores, { rounds: 3, baseSeed: 9 });
-    expect(t.matrix.score).toHaveLength(3);
     for (let i = 0; i < 3; i++) {
       expect(t.matrix.score[i][i]).toBeNull();
       for (let j = 0; j < 3; j++) {

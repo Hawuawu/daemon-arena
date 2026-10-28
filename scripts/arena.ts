@@ -2,15 +2,14 @@
 /**
  * Daemon Arena CLI — headless runner for agents.
  *
- *   npm run arena -- build <entry.ts> [-o out.core.js]
  *   npm run arena -- match <core> <core> [...] [--seed N] [--ticks N] [--replay file.json] [--json] [--verbose]
  *   npm run arena -- tournament <core> <core> [...] [--rounds N] [--seed N] [--mode duel|ffa] [--json]
  *   npm run arena -- new <name>
  *
- * <core> may be a builtin name (hunter, sentinel, ...), a .ts/.js source (bundled on the fly) or a built .core.js.
+ * <core> is a builtin name (hunter, sentinel, ...) or a path to a core script (.js).
  */
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ArenaConfig } from '../src/engine/config';
@@ -18,17 +17,17 @@ import { runMatch } from '../src/engine/match';
 import { hashSeed } from '../src/engine/rng';
 import { runTournament, type TournamentMode } from '../src/engine/tournament';
 import type { Standing } from '../src/engine/types';
-import { bundleCore } from '../src/runtime/bundle';
 import { compileCoreVm } from '../src/runtime/node';
 import { compileCore } from '../src/runtime/sandbox';
 import type { CoreFactory } from '../src/runtime/types';
 
 const root = path.resolve(import.meta.dirname, '..');
+/** npm runs scripts from the package root; resolve user paths against where npm was invoked. */
+const cwd = process.env.INIT_CWD ?? process.cwd();
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    out: { type: 'string', short: 'o' },
     seed: { type: 'string', short: 's' },
     ticks: { type: 'string', short: 't' },
     rounds: { type: 'string', short: 'r' },
@@ -46,23 +45,21 @@ const [command, ...args] = positionals;
 
 function usage(): never {
   console.log(`daemon-arena CLI
-  build <entry.ts|js> [-o out.core.js]      bundle a daemon script (and its imports) into a core
   match <core>... [--seed N] [--ticks N] [--replay f.json] [--json] [--verbose]
   tournament <core>... [--rounds N] [--seed N] [--mode duel|ffa] [--json] [--keep-matches]
-  new <name>                                scaffold cores/<name>.ts from the template
+  validate <core.js>...                     check a core script and print its metadata
+  new <name>                                scaffold <name>.js (in the current directory) from the template
 options: --isolate  run each core in its own node:vm context with a hard per-tick timeout
            (slower; use it while developing a core that might hang or misbehave)`);
   process.exit(command ? 1 : 0);
 }
 
 async function loadSource(ref: string): Promise<{ id: string; source: string }> {
-  const builtin = path.join(root, 'cores', 'dist', `${ref}.core.js`);
+  const builtin = path.join(root, 'cores', `${ref}.js`);
   if (!ref.includes('/') && !ref.includes('.') && existsSync(builtin)) return { id: ref, source: await readFile(builtin, 'utf8') };
-  const file = path.resolve(ref);
+  const file = path.resolve(cwd, ref);
   if (!existsSync(file)) throw new Error(`core not found: ${ref}`);
-  const id = path.basename(file).replace(/(\.core)?\.(ts|js)$/, '');
-  if (file.endsWith('.core.js')) return { id, source: await readFile(file, 'utf8') };
-  return { id, source: await bundleCore(file) };
+  return { id: path.basename(file).replace(/\.js$/, ''), source: await readFile(file, 'utf8') };
 }
 
 async function loadCores(refs: string[]): Promise<CoreFactory[]> {
@@ -96,15 +93,10 @@ function standingRow(s: Standing) {
   };
 }
 
-async function cmdBuild() {
-  const entry = args[0];
-  if (!entry) usage();
-  const code = await bundleCore(path.resolve(entry));
-  const factory = compileCoreVm(code, path.basename(entry));
-  const out = values.out ?? entry.replace(/\.(ts|js)$/, '.core.js');
-  await writeFile(out, code);
-  const result = { ok: true, out, meta: factory.meta, bytes: code.length };
-  console.log(values.json ? JSON.stringify(result) : `built ${factory.meta.name} -> ${out} (${code.length} bytes)`);
+async function cmdValidate() {
+  const factories = await loadCores(args);
+  const result = factories.map((f) => ({ ok: true, id: f.id, meta: f.meta }));
+  console.log(values.json ? JSON.stringify(result) : result.map((r) => `ok  ${r.id}  ${r.meta.name}`).join('\n'));
 }
 
 async function cmdMatch() {
@@ -118,7 +110,7 @@ async function cmdMatch() {
     onLog: values.verbose ? (d, line) => console.error(`[${factories[d].meta.name}] ${line}`) : undefined,
   });
   if (values.replay && replay) {
-    await writeFile(values.replay, JSON.stringify(replay));
+    await writeFile(path.resolve(cwd, values.replay), JSON.stringify(replay));
   }
   if (values.json) {
     console.log(JSON.stringify(result, null, 2));
@@ -166,17 +158,17 @@ async function cmdTournament() {
 async function cmdNew() {
   const name = args[0];
   if (!name || !/^[a-z0-9-_]+$/i.test(name)) throw new Error('usage: new <name> (letters, digits, - and _)');
-  const target = path.join(root, 'cores', `${name}.ts`);
+  const target = path.resolve(cwd, `${name}.js`);
   if (existsSync(target)) throw new Error(`${target} already exists`);
-  const template = (await readFile(path.join(root, 'scripts', 'core-template.ts.txt'), 'utf8')).replaceAll('__NAME__', name.toUpperCase());
-  await mkdir(path.dirname(target), { recursive: true });
+  const template = (await readFile(path.join(root, 'scripts', 'core-template.js'), 'utf8')).replaceAll('__NAME__', name.toUpperCase());
   await writeFile(target, template);
-  console.log(`created ${path.relative(process.cwd(), target)}\nnext: npm run arena -- match cores/${name}.ts hunter`);
+  const rel = path.relative(cwd, target);
+  console.log(`created ${rel}\nnext: npm run arena -- match ${rel} hunter`);
 }
 
 try {
   if (values.help || !command) usage();
-  const handlers: Record<string, () => Promise<void>> = { build: cmdBuild, match: cmdMatch, tournament: cmdTournament, new: cmdNew };
+  const handlers: Record<string, () => Promise<void>> = { validate: cmdValidate, match: cmdMatch, tournament: cmdTournament, new: cmdNew };
   const handler = handlers[command];
   if (!handler) usage();
   await handler();

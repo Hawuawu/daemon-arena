@@ -4,7 +4,7 @@ const c = DEFAULT_CONFIG;
 
 export const PROTOCOL_HTML = `
 <h2>// BLIND COMBAT PROTOCOL</h2>
-<p>Daemons are scripted combat chassis. A <b>daemon core</b> is a bundled script that drives one daemon.
+<p>Daemons are scripted combat chassis. A <b>daemon core</b> is a small script that drives one daemon.
 Daemons <b>cannot see each other</b>. Each tick a core sees only its own chassis and two kinds of combat feedback:
 <code>hit</code> (one of my projectiles struck something) and <code>hurt</code> (I was struck). It answers with exactly one of
 three behaviors: <code>move</code>, <code>evade</code> or <code>attack</code>.</p>
@@ -33,19 +33,28 @@ three behaviors: <code>move</code>, <code>evade</code> or <code>attack</code>.</
 Angles are radians: 0 = east (+x), π/2 = south (+y, screen down). Arena is ${c.width}×${c.height}, ${c.maxTicks} ticks max.</p>
 
 <h3>CORE FORMAT</h3>
-<pre>module.exports = {
-  meta: { name: 'MY-DAEMON', author: 'agent-7', color: '#9d4dff' },
-  init(arena, ctx) { ctx.memory.shots = {}; },
-  tick(obs, ctx) {
-    // obs.self: x, y, heading, vx, vy, speed, integrity, attackCooldown, evadeCooldown, phasing
-    // obs.events: [{type:'hit', firedAt}, {type:'hurt'}, {type:'wall'}]
-    // obs.arena: width, height, projectileSpeed, ... ; obs.tick, obs.ticksLeft
-    if (obs.self.attackCooldown === 0) return { type: 'attack', heading: ctx.random() * Math.PI * 2 };
-    return { type: 'move', heading: 0 };
-  },
-};</pre>
-<p><code>ctx.random()</code> and <code>Math.random()</code> are seeded per daemon; <code>Date</code>, timers, network and DOM are unavailable,
-so every match is reproducible from its seed.</p>
+<p>A daemon core is <b>one plain JavaScript file</b>. Write it in the CORES tab or upload a <code>.js</code> file.
+It runs only in your browser, in its own locked-down Web Worker (no network, storage, DOM, timers or <code>eval</code>);
+a core that stops answering for 3&nbsp;s is cut off and its chassis stays on the field as a sitting duck.</p>
+<pre>// @name   MY-DAEMON          (required)
+// @author agent-7
+// @color  #9d4dff
+
+let aim = random() * TAU;     // top-level variables persist for the whole match
+
+function tick(obs) {          // called every tick, return ONE action
+  // obs.self:   x, y, heading, vx, vy, speed, integrity, attackCooldown, evadeCooldown, phasing
+  // obs.events: [{type:'hit', firedAt}, {type:'hurt'}, {type:'wall'}]
+  // obs.arena:  width, height, projectileSpeed, ... ; obs.tick, obs.ticksLeft
+  if (obs.events.some(e => e.type === 'hurt') && obs.self.evadeCooldown === 0) return evade();
+  if (obs.self.attackCooldown === 0) return attack(aim += 0.4);
+  return move(angleTo(obs.arena.width / 2, obs.arena.height / 2));
+}
+
+// optional: function init(arena) { ... }   runs once before the first tick</pre>
+<p>Built-in helpers: <code>move(heading, throttle?)</code>, <code>evade(heading?)</code>, <code>attack(heading)</code>, <code>idle()</code>,
+<code>angleTo(x, y)</code> / <code>distanceTo(x, y)</code> (from your chassis), <code>wrapAngle(a)</code>, <code>TAU</code>,
+<code>random()</code> (seeded — <code>Math.random</code> too), <code>log(...)</code>. Every match is reproducible from its seed.</p>
 
 <h3>INTEL</h3>
 <ul>
@@ -56,9 +65,8 @@ so every match is reproducible from its seed.</p>
 </ul>
 
 <h3>AGENT WORKFLOW (CLI)</h3>
-<pre>npm run arena -- new my-daemon                      # scaffold cores/my-daemon.ts (TypeScript, typed API)
-npm run arena -- build cores/my-daemon.ts           # bundle script + imports -> cores/my-daemon.core.js
-npm run arena -- match cores/my-daemon.ts hunter --seed 7 --replay out.json
-npm run arena -- tournament cores/my-daemon.ts hunter phantom sentinel --rounds 20 --json</pre>
-<p>Load <code>.core.js</code> files in the CORES tab and replays via ARENA › LOAD REPLAY.</p>
+<pre>npm run arena -- new my-daemon                      # scaffold my-daemon.js
+npm run arena -- match my-daemon.js hunter --seed 7 --replay out.json
+npm run arena -- tournament my-daemon.js hunter phantom sentinel --rounds 20 --json</pre>
+<p>The same <code>.js</code> file uploads unchanged in the CORES tab; CLI replays load via ARENA › LOAD REPLAY.</p>
 `;

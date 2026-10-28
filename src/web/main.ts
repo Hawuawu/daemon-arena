@@ -2,7 +2,8 @@ import './styles.css';
 import type { CoreMeta } from '../api';
 import type { TournamentResult } from '../engine/tournament';
 import type { FrameEvent, Replay } from '../engine/types';
-import { compileCore } from '../runtime/sandbox';
+import { parseMeta } from '../runtime/sandbox';
+import coreTemplate from '../../scripts/core-template.js?raw';
 import { PROTOCOL_HTML } from './docs';
 import type { CoreSource, WorkerRequest, WorkerResponse } from './protocol';
 import { ArenaRenderer } from './renderer';
@@ -31,12 +32,12 @@ interface StoredCore extends CoreSource {
   builtin: boolean;
 }
 const STORE_KEY = 'daemon-arena.cores.v1';
-const builtinSources = import.meta.glob('../../cores/dist/*.core.js', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const builtinSources = import.meta.glob('../../cores/*.js', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const BUILTIN_ORDER = ['hunter', 'phantom', 'sentinel', 'drifter', 'spinner'];
 const builtins: StoredCore[] = Object.entries(builtinSources)
   .map(([file, source]) => {
-    const id = file.split('/').pop()!.replace('.core.js', '');
-    return { id, source, meta: compileCore(source, id).meta, builtin: true };
+    const id = file.split('/').pop()!.replace('.js', '');
+    return { id, source, meta: parseMeta(source), builtin: true };
   })
   .sort((a, b) => BUILTIN_ORDER.indexOf(a.id) - BUILTIN_ORDER.indexOf(b.id));
 
@@ -60,7 +61,7 @@ class SimClient {
   private seq = 0;
   private pending = new Map<number, { resolve: (r: WorkerResponse) => void; reject: (e: Error) => void; onProgress?: (d: number, t: number) => void }>();
   private lastBeat = 0;
-  constructor(private hangMs = 10000) {
+  constructor(private hangMs = 30000) {
     this.spawn();
     setInterval(() => {
       if (this.pending.size && performance.now() - this.lastBeat > this.hangMs) {
@@ -383,29 +384,7 @@ $('#run-tour').addEventListener('click', async () => {
 $('#tour-export').addEventListener('click', () => lastTour && download('daemon-arena-tournament.json', JSON.stringify(lastTour, null, 2)));
 
 // ---------- core vault ----------
-const TEMPLATE = `// Daemon core: plain JavaScript (CommonJS).
-// TypeScript cores can be bundled with: npm run arena -- build cores/my-daemon.ts
-module.exports = {
-  meta: { name: 'NEWCORE', author: 'you', color: '#9d4dff' },
-
-  init(arena, ctx) {
-    ctx.memory.aim = ctx.random() * Math.PI * 2;
-  },
-
-  tick(obs, ctx) {
-    const { self, events, arena } = obs;
-    if (events.some((e) => e.type === 'hurt') && self.evadeCooldown === 0) {
-      return { type: 'evade' };
-    }
-    if (self.attackCooldown === 0) {
-      ctx.memory.aim += 0.4;
-      return { type: 'attack', heading: ctx.memory.aim };
-    }
-    const toCenter = Math.atan2(arena.height / 2 - self.y, arena.width / 2 - self.x);
-    return { type: 'move', heading: toCenter, throttle: 0.5 };
-  },
-};
-`;
+const TEMPLATE = coreTemplate.replace('__NAME__', 'NEWCORE');
 let editing: string | null = null;
 const editor = $<HTMLTextAreaElement>('#core-editor');
 function coreMsg(text: string, err = false) {
@@ -472,7 +451,7 @@ $('#core-save').addEventListener('click', async () => {
 });
 $('#core-download').addEventListener('click', () => {
   const c = editing ? coreById(editing) : null;
-  download(`${c ? c.id : 'core'}.core.js`, editor.value, 'text/javascript');
+  download(`${c ? c.id.replace(/^custom-/, '') : 'core'}.js`, editor.value, 'text/javascript');
 });
 $('#core-delete').addEventListener('click', () => {
   if (!editing || coreById(editing)?.builtin) return;
