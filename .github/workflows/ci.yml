@@ -18,7 +18,7 @@ jobs:
       - run: npm run build
       - run: npm run coverage
       - run: npm run arena -- tournament hunter phantom sentinel drifter spinner --rounds 3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: coverage
           path: coverage/
