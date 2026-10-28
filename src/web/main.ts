@@ -155,9 +155,10 @@ function loadReplay(replay: Replay) {
   replay.daemons.forEach(() => leds.push({ hit: 0, hurt: 0 }));
   const scrub = $<HTMLInputElement>('#scrub');
   scrub.max = String(replay.frames.length - 1);
+  $('#scoreboard').classList.toggle('compact', replay.daemons.length > 4);
   $('#scoreboard').innerHTML = replay.daemons
     .map((d) => `<div class="dcard" id="dcard-${d.id}" style="--c:${esc(d.color)}">
-      <div class="row"><span class="name">${esc(d.name)}</span><span class="score">0</span></div>
+      <div class="row"><span class="name" title="${esc(d.name)}">${esc(d.name)}</span><span class="score">0</span></div>
       <div class="bar"><div style="width:100%"></div></div>
       <div class="leds"><span class="led hit">HIT</span><span class="led hurt">HURT</span><span class="led phase">PHASE</span><span class="stats"></span></div>
     </div>`)
@@ -183,13 +184,13 @@ function pushFeed(t: number, html: string) {
 
 function onFrameEvents(t: number, events: FrameEvent[]) {
   const r = play.replay!;
-  const tag = (id: number) => `<b style="color:${esc(r.daemons[id].color)}">${esc(r.daemons[id].name)}</b>`;
+  const tag = (id: number) => `<b style="color:${esc(r.daemons[id].color)}" title="${esc(r.daemons[id].name)}">${esc(r.daemons[id].name)}</b>`;
   renderer.effects(events);
   for (const e of events) {
     if (e.k === 'hit') {
       leds[e.by].hit = 0.3;
       leds[e.d].hurt = 0.3;
-      pushFeed(t, `${tag(e.by)} <span style="color:#f9f871">HIT</span> · ${tag(e.d)} <span style="color:#ff3864">HURT</span>`);
+      pushFeed(t, `${tag(e.by)} <span style="color:#f9f871">HIT</span> ${tag(e.d)}`);
     } else if (e.k === 'evade') pushFeed(t, `${tag(e.d)} evade`);
     else if (e.k === 'dodge') pushFeed(t, `${tag(e.d)} <span style="color:#00f0ff">phased through fire</span>`);
     else if (e.k === 'derez') pushFeed(t, `${tag(e.d)} <span style="color:#ff3864">DEREZZED</span>`);
