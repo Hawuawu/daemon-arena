@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -14,5 +16,43 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      - run: npm run coverage
       - run: npm run arena -- tournament hunter phantom sentinel drifter spinner --rounds 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+      - name: Coverage summary
+        run: |
+          node -e "const t=require('./coverage/coverage-summary.json').total;console.log('| metric | % |\n|---|---|\n'+['lines','statements','functions','branches'].map(k=>'| '+k+' | '+t[k].pct+' |').join('\n'))" >> "$GITHUB_STEP_SUMMARY"
+
+  badges:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run coverage
+      - name: Publish badges to the `badges` branch
+        run: |
+          pct=$(node -p "require('./coverage/coverage-summary.json').total.lines.pct")
+          tests=$(npx vitest run --reporter=json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const r=JSON.parse(s);console.log(r.numPassedTests+' passed')})")
+          color=$(node -p "$pct>=90?'#4c1':$pct>=75?'#dfb317':'#e05d44'")
+          mkdir -p /tmp/badges
+          node scripts/badge.mjs coverage "$pct%" "$color" /tmp/badges/coverage.svg
+          node scripts/badge.mjs tests "$tests" '#4c1' /tmp/badges/tests.svg
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin badges && git checkout badges || git checkout --orphan badges
+          git rm -rfq . 2>/dev/null || true
+          cp /tmp/badges/*.svg .
+          git add coverage.svg tests.svg
+          git commit -qm "badges: coverage $pct%, tests $tests" || exit 0
+          git push origin badges

@@ -33,50 +33,55 @@ Tournaments rank by **meanScore**, then **winRate**, and report pairwise matrice
 Angles are radians: `0` = east (+x), `π/2` = south (+y). Arena 800×800, daemon radius 20, 3000 ticks max.
 All constants are in `obs.arena` — read them instead of hard-coding. Source of truth: `src/engine/config.ts`.
 
-Faults (count in stats, action becomes idle): throwing, returning an invalid action, exceeding the per-tick time budget (20 ms; hard 50 ms timeout under `--isolate`).
+Faults (count in stats, action becomes idle): throwing, returning an invalid action, exceeding the per-tick time budget (20 ms; hard 50 ms timeout under `--isolate`, worker terminated after 3 s in the browser).
 
-## API
+## Core format
 
-Types live in [`src/api.ts`](src/api.ts). Minimal core:
+A core is **one plain JavaScript file**. The same file runs in the CLI and uploads unchanged at https://arena.maiyun.eu (CORES tab).
 
-```ts
-import { defineCore } from '../src/api';
+```js
+// @name   MY-DAEMON        (required, max 24 chars)
+// @author agent
+// @color  #9d4dff
 
-export default defineCore({
-  meta: { name: 'MY-DAEMON', author: 'agent', color: '#9d4dff' },
-  init(arena, ctx) { ctx.memory.shots = {}; },
-  tick(obs, ctx) {
-    if (obs.self.attackCooldown === 0) return { type: 'attack', heading: ctx.random() * Math.PI * 2 };
-    return { type: 'move', heading: 0 };
-  },
-});
+let aim = random() * TAU;   // top-level variables persist for the whole match
+
+function tick(obs) {        // every tick: return ONE action
+  const me = obs.self;
+  if (obs.events.some((e) => e.type === 'hurt') && me.evadeCooldown === 0) return evade();
+  if (me.attackCooldown === 0) return attack((aim += 0.4));
+  return move(angleTo(obs.arena.width / 2, obs.arena.height / 2), 0.5);
+}
+
+// optional: function init(arena) { ... }  runs once before the first tick
 ```
 
-- `ctx.random()` / `Math.random()` are seeded per daemon → matches are reproducible from the seed.
-- `ctx.memory` (or closure variables) persist for the whole match. A fresh instance is created per match.
-- `ctx.log(...)` / `console.log(...)` are captured (`--verbose` in the CLI, signal feed in the browser).
-- No `Date`, timers, network, DOM or `eval`. Imports are bundled; Node built-ins are not available.
-- Helpers in [`cores/lib/nav.ts`](cores/lib/nav.ts): `angleTo`, `wrapAngle`, `distance`, `towardCenter`, `wallClearance`, `estimateImpactDistance`.
+- `obs = { tick, ticksLeft, self, events, arena }`; full types in [`src/api.ts`](src/api.ts).
+- Globals: `move(heading, throttle?)`, `evade(heading?)`, `attack(heading)`, `idle()`, `angleTo(x, y)` and `distanceTo(x, y)` (from your chassis), `wrapAngle(a)`, `TAU`, `random()`, `log(...)`. You can also return plain objects like `{ type: 'attack', heading }`.
+- `random()` / `Math.random()` are seeded per daemon, so matches are reproducible from the seed. A fresh instance (fresh top-level state) is created for every match.
+- No `Date`, timers, network, DOM, storage, `eval`/`Function`, imports or `require`. One file, no build step.
+- `log(...)` / `console.log(...)` output shows with `--verbose` in the CLI and in the browser signal feed.
+- In the browser each core runs in its own locked-down Web Worker on the viewer's machine; a core that does not answer for 3 s is terminated and its chassis stays in the arena as a target (counts as a fault).
 
 ## Workflow
 
 ```bash
 npm install
-npm run arena -- new my-daemon                         # scaffold cores/my-daemon.ts
-npm run arena -- match cores/my-daemon.ts hunter --seed 7 --verbose
-npm run arena -- match cores/my-daemon.ts hunter --seed 7 --replay out.replay.json   # watch it in the browser
-npm run arena -- tournament cores/my-daemon.ts hunter phantom sentinel drifter spinner --rounds 20 --json
-npm run arena -- build cores/my-daemon.ts              # -> cores/my-daemon.core.js (upload in the CORES tab)
+npm run arena -- new my-daemon                         # scaffold my-daemon.js
+npm run arena -- validate my-daemon.js
+npm run arena -- match my-daemon.js hunter --seed 7 --verbose
+npm run arena -- match my-daemon.js hunter --seed 7 --replay out.replay.json   # watch it in the browser
+npm run arena -- tournament my-daemon.js hunter phantom sentinel drifter spinner --rounds 20 --json
 ```
 
-- Core refs: builtin name (`hunter`, `phantom`, `sentinel`, `drifter`, `spinner`), a `.ts`/`.js` entry (bundled on the fly) or a built `.core.js`.
+- Core refs: builtin name (`hunter`, `phantom`, `sentinel`, `drifter`, `spinner` from [`cores/`](cores/)) or a path to a `.js` core.
 - `--json` prints machine-readable results (`MatchResult` / `TournamentResult` from `src/engine/*.ts`); errors print `{ "ok": false, "error": ... }` and exit 1.
 - `--isolate` runs each core in its own `node:vm` context with a hard per-tick timeout — use it if your core may hang.
-- Evaluate on many seeds (`--rounds 20+`) before trusting a change; single matches are noisy.
+- Evaluate on many seeds (`--rounds 20+`) before trusting a change; single matches are noisy. The same seed is reproducible within the CLI (or within one browser); CLI and browser can diverge slightly because their `Math.sin`/`cos` differ in the last bits.
 
 ## Intel
 
-- Projectiles fly straight at constant speed. A `hit` observed on tick `T` for a shot fired at tick `F` from `(x, y)` along `h` means the target was ≈ `radius + 5 + speed × (T − F)` units along that ray (`estimateImpactDistance`). `HUNTER` uses this to triangulate.
+- Projectiles fly straight at constant speed. A `hit` observed on tick `T` for a shot fired at tick `F` from `(x, y)` along `h` means the target was ≈ `radius + 5 + speed × (T − F)` units along that ray. [`cores/hunter.js`](cores/hunter.js) uses this to triangulate.
 - `hurt` has no direction, but someone has a firing solution on you — evading or changing course breaks it.
 - Moving and attacking compete for ticks; momentum lets you drift while firing.
 - Baselines to beat, roughly in order: `HUNTER` > `PHANTOM` > `SENTINEL` > `DRIFTER` > `SPINNER`.

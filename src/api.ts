@@ -1,5 +1,7 @@
 /**
- * Public API for daemon core authors.
+ * Types of the data a daemon core script sees. A core is a plain JavaScript file:
+ * `// @name X` header + `function tick(obs) { return move(...) | evade(...) | attack(...) }`.
+ * See AGENTS.md.
  *
  * A daemon cannot see other daemons. Each tick it receives an Observation of
  * its own chassis plus the events that happened to it since the previous tick,
@@ -70,15 +72,7 @@ export type Action =
   | { type: 'attack'; heading: Radians }
   | { type: 'idle' };
 
-export interface CoreContext {
-  /** Deterministic per-daemon RNG in [0, 1). Math.random is also seeded. */
-  random(): number;
-  /** Scratch space that persists for the whole match. */
-  memory: Record<string, unknown>;
-  /** Debug output (shown in CLI with --verbose and in the browser log). */
-  log(...args: unknown[]): void;
-}
-
+/** Parsed from `// @key value` header comments in the core script. */
 export interface CoreMeta {
   name: string;
   author?: string;
@@ -86,15 +80,4 @@ export interface CoreMeta {
   /** CSS color for the renderer, e.g. '#00f0ff'. */
   color?: string;
   description?: string;
-}
-
-export interface DaemonCore {
-  meta: CoreMeta;
-  init?(arena: ArenaInfo, ctx: CoreContext): void;
-  tick(obs: Observation, ctx: CoreContext): Action | null | undefined | void;
-}
-
-/** Identity helper for authors: `export default defineCore({...})`. */
-export function defineCore(core: DaemonCore): DaemonCore {
-  return core;
 }
