@@ -9,11 +9,11 @@ export default defineConfig({
     environment: 'node',
     coverage: {
       provider: 'v8',
-      // The engine and core runtimes are unit-tested; src/web (canvas UI, workers) is covered by browser smoke tests.
+      // Engine, runtimes and the worker coordinator are unit-tested; the canvas UI is covered by browser smoke tests.
       include: ['src/**/*.ts'],
-      exclude: ['src/web/**', 'src/api.ts', 'src/**/types.ts'],
+      exclude: ['src/web/main.ts', 'src/web/renderer.ts', 'src/web/docs.ts', 'src/web/sim.worker.ts', 'src/web/protocol.ts', 'src/api.ts', 'src/**/types.ts'],
       reporter: ['text', 'json-summary', 'html'],
-      thresholds: { lines: 90, statements: 90, functions: 95, branches: 75 },
+      thresholds: { lines: 95, statements: 95, functions: 95, branches: 85 },
     },
   },
 } as never);
