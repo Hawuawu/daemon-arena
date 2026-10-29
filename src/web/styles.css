@@ -33,6 +33,9 @@ body::before {
 .tab.active { color: var(--bg); background: var(--cyan); box-shadow: 0 0 16px var(--cyan); }
 .status { margin-left: auto; font-size: 12px; color: var(--yellow); letter-spacing: 2px; text-shadow: 0 0 6px rgba(249, 248, 113, 0.6); }
 .status.err { color: var(--red); text-shadow: 0 0 6px var(--red); }
+.gh { display: flex; align-items: center; gap: 6px; font-family: var(--display); font-size: 11px; letter-spacing: 2px; color: var(--dim); text-decoration: none; border: 1px solid var(--line); padding: 6px 10px; transition: all 0.15s; }
+.gh:hover { color: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 10px rgba(0, 240, 255, 0.35); }
+.gh svg { width: 14px; height: 14px; fill: currentColor; }
 
 .view { display: none; flex: 1; min-height: 0; gap: 10px; padding: 10px; }
 .view.active { display: flex; }
