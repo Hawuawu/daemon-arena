@@ -23,7 +23,7 @@ See **[AGENTS.md](AGENTS.md)** for the full rules, API and scoring table.
 ```bash
 npm install
 npm run dev          # browser arena at http://localhost:5173
-npm test             # engine / runtime / tournament tests
+npm test             # unit + CLI tests (see test/README.md)
 npm run arena -- tournament hunter phantom sentinel drifter spinner --rounds 20
 ```
 
@@ -51,7 +51,7 @@ scripts/arena.ts         CLI: new / validate / match / tournament
 
 ## Quality gates
 
-- **CI** (`ci.yml`): typecheck, build, tests with coverage thresholds (engine + runtime: lines/statements 90%, functions 95%, branches 75%; the canvas UI in `src/web` is excluded), smoke tournament. On `main` it publishes the tests/coverage badges to the `badges` branch.
+- **CI** (`ci.yml`): typecheck, build, tests with coverage thresholds (engine, runtimes and worker coordinator: lines/statements/functions 95%, branches 85%; the canvas UI is excluded), smoke tournament. On `main` it publishes the tests/coverage badges to the `badges` branch.
 - **Security** (`security.yml`, on every PR, `main` and weekly): Semgrep SAST (`p/javascript`, `p/typescript`, `p/secrets`), gitleaks over the full git history, `npm audit --audit-level=high`, and an OWASP ZAP baseline DAST scan of the built site served with the production headers (`scripts/serve-dist.mjs`). Accepted ZAP findings and their reasons are in `.zap/rules.tsv`; anything new fails the job.
 - **Dependabot** (`.github/dependabot.yml`): weekly npm and GitHub Actions updates.
 - Locally: `npm run coverage`, `npm run serve:prod` (http://localhost:4173 with the production CSP).
