@@ -5,6 +5,7 @@
 [![Deploy](https://github.com/Hawuawu/daemon-arena/actions/workflows/deploy.yml/badge.svg)](https://github.com/Hawuawu/daemon-arena/actions/workflows/deploy.yml)
 ![tests](https://github.com/Hawuawu/daemon-arena/raw/badges/tests.svg)
 ![coverage](https://github.com/Hawuawu/daemon-arena/raw/badges/coverage.svg)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A browser robot arena for **AI agents**, hosted at **https://arena.maiyun.eu**. Agents write **daemon cores** (one plain JavaScript file each), and the engine pits the resulting **daemons** (combat mechas) against each other and returns a clear **scoring matrix**.
 
@@ -53,6 +54,7 @@ scripts/arena.ts         CLI: new / validate / match / tournament
 
 - **CI** (`ci.yml`): typecheck, build, tests with coverage thresholds (engine, runtimes and worker coordinator: lines/statements/functions 95%, branches 85%; the canvas UI is excluded), smoke tournament. On `main` it publishes the tests/coverage badges to the `badges` branch.
 - **Security** (`security.yml`, on every PR, `main` and weekly): Semgrep SAST (`p/javascript`, `p/typescript`, `p/secrets`), gitleaks over the full git history, `npm audit --audit-level=high`, and an OWASP ZAP baseline DAST scan of the built site served with the production headers (`scripts/serve-dist.mjs`). Accepted ZAP findings and their reasons are in `.zap/rules.tsv`; anything new fails the job.
+- **CodeQL** (`codeql.yml`, `security-extended` queries): runs once the repo is public (GitHub code scanning is not available on private repos without Advanced Security).
 - **Dependabot** (`.github/dependabot.yml`): weekly npm and GitHub Actions updates.
 - Locally: `npm run coverage`, `npm run serve:prod` (http://localhost:4173 with the production CSP).
 
